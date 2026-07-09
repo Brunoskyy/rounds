@@ -28,6 +28,11 @@ export default tseslint.config(
     },
   },
   {
+    // Test doubles implement async interfaces without awaiting anything.
+    files: ['**/test/**/*.ts'],
+    rules: { '@typescript-eslint/require-await': 'off' },
+  },
+  {
     files: ['**/*.config.{js,ts,mts}', 'vitest.workspace.ts'],
     extends: [tseslint.configs.disableTypeChecked],
   },
