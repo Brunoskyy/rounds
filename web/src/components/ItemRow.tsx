@@ -9,7 +9,7 @@ interface Props {
   def: ChecklistItem
   item: RoundItem
   readOnly: boolean
-  onChange: (item: RoundItem) => void
+  onPatch: (patch: Partial<RoundItem>) => void
   onPhoto: (file: File) => void
   getPhoto: (id: string) => Promise<StoredPhoto | undefined>
 }
@@ -26,7 +26,7 @@ const STATUS: Array<{ value: ItemStatus; label: string; tone: string }> = [
  * range, a note, and a photo that is stored on the device until there is
  * signal.
  */
-export function ItemRow({ def, item, readOnly, onChange, onPhoto, getPhoto }: Props) {
+export function ItemRow({ def, item, readOnly, onPatch, onPhoto, getPhoto }: Props) {
   // Drafts for the two typed fields. When the item changes underneath (a
   // sync brought a new value), the draft follows; while typing, it leads.
   const [note, setNote] = useState(item.note)
@@ -67,13 +67,12 @@ export function ItemRow({ def, item, readOnly, onChange, onPhoto, getPhoto }: Pr
     const n = reading.trim() === '' ? undefined : Number(reading)
     if (n !== undefined && !Number.isFinite(n)) return
     if (n === item.reading) return
-    const next: RoundItem = { ...item }
-    if (n === undefined) delete next.reading
-    else next.reading = n
+    const patch: Partial<RoundItem> =
+      n === undefined ? { reading: undefined as unknown as number } : { reading: n }
     // A reading outside the range is an issue until someone says otherwise.
-    if (n !== undefined && outOfRange(def, n) && item.status === 'pending') next.status = 'issue'
-    else if (n !== undefined && item.status === 'pending') next.status = 'ok'
-    onChange(next)
+    if (n !== undefined && item.status === 'pending')
+      patch.status = outOfRange(def, n) ? 'issue' : 'ok'
+    onPatch(patch)
   }
 
   return (
@@ -120,9 +119,7 @@ export function ItemRow({ def, item, readOnly, onChange, onPhoto, getPhoto }: Pr
             type="button"
             disabled={readOnly}
             aria-pressed={item.status === s.value}
-            onClick={() =>
-              onChange({ ...item, status: item.status === s.value ? 'pending' : s.value })
-            }
+            onClick={() => onPatch({ status: item.status === s.value ? 'pending' : s.value })}
             className={`rounded-lg border py-3 text-sm font-medium disabled:opacity-60 ${
               item.status === s.value
                 ? `${s.tone} border-current`
@@ -180,7 +177,7 @@ export function ItemRow({ def, item, readOnly, onChange, onPhoto, getPhoto }: Pr
           disabled={readOnly}
           maxLength={1000}
           onChange={(e) => setNote(e.target.value)}
-          onBlur={() => note !== item.note && onChange({ ...item, note })}
+          onBlur={() => note !== item.note && onPatch({ note })}
         />
       </label>
     </div>

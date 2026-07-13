@@ -15,22 +15,30 @@ export function RoundPage({ id }: { id: string }) {
   const site = round ? sites.find((s) => s.id === round.siteId) : undefined
   const conflict = conflicts.find((c) => c.roundId === id)
 
+  // Every edit is a function of the latest round in the repo, never of the
+  // round this render saw: two taps within one write's latency must not
+  // overwrite each other.
   const update = useCallback(
-    (next: Round) => {
-      void repo.saveRound({ ...next, updatedAt: Date.now() }).then(() => void engine.sync())
+    (change: (current: Round) => Round) => {
+      const current = repo.getRound(id)
+      if (!current) return
+      void repo
+        .saveRound({ ...change(current), updatedAt: Date.now() })
+        .then(() => void engine.sync())
     },
-    [repo, engine],
+    [repo, engine, id],
   )
 
-  const setItem = useCallback(
-    (item: RoundItem) => {
-      if (!round) return
-      update({
-        ...round,
-        items: { ...round.items, [item.itemId]: { ...item, updatedAt: Date.now() } },
+  const patchItem = useCallback(
+    (itemId: string, patch: Partial<RoundItem>) => {
+      update((current) => {
+        const item = current.items[itemId] ?? { itemId, status: 'pending', note: '', updatedAt: 0 }
+        const next: RoundItem = { ...item, ...patch, updatedAt: Date.now() }
+        if (next.reading === undefined) delete next.reading
+        return { ...current, items: { ...current.items, [itemId]: next } }
       })
     },
-    [round, update],
+    [update],
   )
 
   if (!round || !checklist) {
@@ -56,9 +64,19 @@ export function RoundPage({ id }: { id: string }) {
       blob: file,
       uploaded: false,
     })
-    const current = round.items[itemId]
-    if (current)
-      setItem({ ...current, photoId, status: current.status === 'pending' ? 'ok' : current.status })
+    update((current) => {
+      const item = current.items[itemId] ?? {
+        itemId,
+        status: 'pending' as const,
+        note: '',
+        updatedAt: 0,
+      }
+      const status = item.status === 'pending' ? ('ok' as const) : item.status
+      return {
+        ...current,
+        items: { ...current.items, [itemId]: { ...item, photoId, status, updatedAt: Date.now() } },
+      }
+    })
   }
 
   const progress = roundProgress(round)
@@ -105,7 +123,7 @@ export function RoundPage({ id }: { id: string }) {
                 def={def}
                 item={item}
                 readOnly={finished}
-                onChange={setItem}
+                onPatch={(patch) => patchItem(def.id, patch)}
                 onPhoto={(file) => void attachPhoto(def.id, file)}
                 getPhoto={(photoId) => repo.getPhoto(photoId)}
               />
@@ -125,7 +143,7 @@ export function RoundPage({ id }: { id: string }) {
             <button
               type="button"
               className="border-line ml-auto rounded-lg border px-4 py-2.5 text-sm"
-              onClick={() => update({ ...round, finishedAt: null })}
+              onClick={() => update((c) => ({ ...c, finishedAt: null }))}
             >
               Reopen
             </button>
@@ -134,7 +152,7 @@ export function RoundPage({ id }: { id: string }) {
               type="button"
               disabled={!canFinish}
               className="bg-accent ml-auto rounded-lg px-5 py-2.5 font-medium text-white disabled:opacity-40"
-              onClick={() => update({ ...round, finishedAt: Date.now() })}
+              onClick={() => update((c) => ({ ...c, finishedAt: Date.now() }))}
               title={canFinish ? 'Sign off this round' : 'Every item needs a status first'}
             >
               Sign off

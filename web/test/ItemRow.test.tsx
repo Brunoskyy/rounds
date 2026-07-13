@@ -23,7 +23,7 @@ function setup(def: ChecklistItem, item: RoundItem, readOnly = false) {
       def={def}
       item={item}
       readOnly={readOnly}
-      onChange={onChange}
+      onPatch={onChange}
       onPhoto={vi.fn()}
       getPhoto={() => Promise.resolve(undefined)}
     />,
@@ -46,10 +46,10 @@ describe('ItemRow', () => {
     const user = userEvent.setup()
     const { onChange } = setup(check, { ...base, itemId: 'leaks' })
     await user.click(screen.getByRole('button', { name: 'OK' }))
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ok' }))
+    expect(onChange).toHaveBeenLastCalledWith({ status: 'ok' })
     const { onChange: again } = setup(check, { ...base, itemId: 'leaks', status: 'ok' })
     await user.click(screen.getAllByRole('button', { name: 'OK' })[1]!)
-    expect(again).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'pending' }))
+    expect(again).toHaveBeenLastCalledWith({ status: 'pending' })
   })
 
   it('marks an out-of-range reading as an issue and an in-range one as ok', async () => {
@@ -80,7 +80,7 @@ describe('ItemRow', () => {
     await user.type(screen.getByLabelText('No leaks note'), 'drip at the flange')
     expect(onChange).not.toHaveBeenCalled()
     await user.tab()
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ note: 'drip at the flange' }))
+    expect(onChange).toHaveBeenCalledWith({ note: 'drip at the flange' })
   })
 
   it('is inert once the round is signed off', () => {

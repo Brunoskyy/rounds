@@ -169,3 +169,23 @@ describe('SyncEngine', () => {
     expect(await repo.pendingPhotos()).toEqual([])
   })
 })
+
+describe('Repo.saveRound', () => {
+  it('reflects an edit in memory before the write finishes, so quick edits do not race', async () => {
+    const { repo } = await setup()
+    const r = newRound('r1')
+    const first = repo.saveRound(setItem(r, 'leaks', { status: 'ok' }))
+    // Immediately, before awaiting: the next edit must build on the first.
+    const latest = repo.getRound('r1')!
+    expect(latest.items.leaks?.status).toBe('ok')
+    const second = repo.saveRound(setItem(latest, 'pressure', { status: 'issue', reading: 9 }))
+    await Promise.all([first, second])
+    const again = new Repo(repo.db)
+    await again.load()
+    expect(again.getRound('r1')?.items).toMatchObject({
+      leaks: { status: 'ok' },
+      pressure: { status: 'issue', reading: 9 },
+    })
+    expect(again.getSnapshot().outbox).toHaveLength(1)
+  })
+})
