@@ -39,13 +39,13 @@ turn the network off in devtools (or the Wi-Fi), keep working, reload the
 page, turn it back on. To see a conflict, edit the same item from a second
 browser profile while the first is offline.
 
-| Command | |
-| --- | --- |
-| `npm test` | shared, server and client tests |
-| `npm run typecheck` | `tsc` per workspace |
-| `npm run build` | client (with the service worker) to `web/dist`, server to `server/dist` |
-| `npm start` | one process serves the API and the built client |
-| `docker build -t rounds . && docker run -p 8788:8788 -v rounds:/data rounds` | the same, in a container |
+| Command                                                                      |                                                                         |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `npm test`                                                                   | shared, server and client tests                                         |
+| `npm run typecheck`                                                          | `tsc` per workspace                                                     |
+| `npm run build`                                                              | client (with the service worker) to `web/dist`, server to `server/dist` |
+| `npm start`                                                                  | one process serves the API and the built client                         |
+| `docker build -t rounds . && docker run -p 8788:8788 -v rounds:/data rounds` | the same, in a container                                                |
 
 ## How offline works
 
@@ -54,6 +54,8 @@ Three layers, each with one job.
 **The service worker** precaches the app shell, so the page opens with no
 network at all. It never caches `/api`: the data lives in IndexedDB, and a
 worker that cached API responses would be a second, dumber source of truth.
+A new version is offered in a banner, never applied by reloading under
+someone's fingers.
 
 **IndexedDB, through a small `Repo`**, holds sites, checklists, and two
 copies of every round: the one this device edits and the last one the server
@@ -113,12 +115,15 @@ has to say otherwise.
 npm test
 ```
 
-26 tests. The merge and the validators as pure functions; the server over
+35 tests. The merge and the validators as pure functions; the server over
 real HTTP on a random port, including the losing write; the client's repo
 and engine against `fake-indexeddb` and a fake API with an offline switch:
 queue while offline, survive a reload, auto-merge a clean 409, park a real
-conflict and push the rest, resolve and push, pull without clobbering. Two
-component tests cover the item row and the conflict card.
+conflict and push the rest, resolve and push, pull without clobbering, keep
+an edit made while a push is in flight, refuse to merge against a base of
+the wrong version, carry on past a rejected round or photo, reopen a
+sign-off that raced an edit. Component tests cover the item row (including
+typing while a pull changes the item) and the conflict card.
 
 ## Layout
 
@@ -141,8 +146,9 @@ web/src/
 ## What's missing
 
 - No accounts. The name typed on first launch is the technician.
-- Photos are stored full size. A phone camera file is several megabytes;
-  resizing before storing is the obvious next step.
+- Photos are redrawn to jpeg at 1600px before storing, which handles HEIC
+  and the 50 MP modes; there is no retry UI for a photo the server refused
+  beyond showing the reason.
 - No background sync when the app is closed. The Background Sync API is
   Chromium-only; the engine syncs whenever the app is open and online.
 - Checklists are seeded, not editable. An admin screen would be a separate

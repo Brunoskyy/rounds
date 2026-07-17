@@ -1,6 +1,6 @@
-import { mergeRound } from '@rounds/shared'
+import { mergeRound, type Round } from '@rounds/shared'
 
-import { NetworkError, type Api } from '../data/api.ts'
+import { NetworkError, RejectedError, type Api } from '../data/api.ts'
 import type { Repo } from '../data/repo.ts'
 
 export interface SyncStatus {
@@ -121,42 +121,92 @@ export class SyncEngine {
     await this.repo.applyPull(data)
   }
 
+  /** One round failing for its own reasons must not hold the others, or the pull. */
   async push(): Promise<void> {
     const queue = this.repo.getSnapshot().outbox.filter((e) => !e.blocked)
     for (const entry of queue) {
-      await this.pushOne(entry.roundId)
+      try {
+        await this.pushOne(entry.roundId)
+      } catch (e) {
+        if (e instanceof NetworkError) throw e
+        await this.repo.markAttempt(entry.roundId, e instanceof Error ? e.message : String(e))
+      }
     }
   }
 
   private async pushOne(roundId: string): Promise<void> {
-    let local = this.repo.getRound(roundId)
-    if (!local) return
     for (let attempt = 0; attempt <= MAX_MERGE_RETRIES; attempt += 1) {
-      const result = await this.api.pushRound(local)
+      const pushed = this.repo.getRound(roundId)
+      if (!pushed) return
+      const result = await this.api.pushRound(pushed)
       if (result.status === 200 && result.body.ok) {
-        await this.repo.confirmPush(result.body.round)
+        await this.repo.confirmPush(result.body.round, pushed.updatedAt)
         return
       }
-      if (result.status !== 409 || result.body.ok) throw new Error('unexpected push response')
+      if (result.status !== 409 || result.body.ok)
+        throw new RejectedError(result.status, 'unexpected push response')
+
       const theirs = result.body.current
-      const base = (await this.repo.serverCopy(roundId)) ?? { ...theirs, items: {}, version: 0 }
-      const { merged, conflicts } = mergeRound(base, local, theirs)
-      if (conflicts.length > 0) {
-        await this.repo.setConflict({ roundId, merged, conflicts })
+      const merged = await this.mergeAgainst(pushed, theirs)
+      if (merged.conflicts.length > 0) {
+        await this.repo.adoptMerge(merged.round, theirs)
+        await this.repo.setConflict({
+          roundId,
+          merged: { ...merged.round, version: theirs.version },
+          conflicts: merged.conflicts,
+        })
         await this.repo.markAttempt(roundId, 'needs your decision', true)
         return
       }
-      local = { ...merged, version: theirs.version }
-      await this.repo.replaceLocal(local)
+      await this.repo.adoptMerge(merged.round, theirs)
       await this.repo.markAttempt(roundId)
     }
     await this.repo.markAttempt(roundId, 'kept losing the race; will retry')
   }
 
+  /**
+   * Three-way merge of what was pushed against what the server has. The base
+   * is the server copy only when it is the version the push was made from;
+   * otherwise nothing can be assumed and every difference is a conflict.
+   * Edits made while the push was in flight are layered on afterwards.
+   */
+  private async mergeAgainst(
+    pushed: Round,
+    theirs: Round,
+  ): Promise<{ round: Round; conflicts: ReturnType<typeof mergeRound>['conflicts'] }> {
+    const stored = await this.repo.serverCopy(pushed.id)
+    const base =
+      stored && stored.version === pushed.version
+        ? stored
+        : { ...theirs, items: {}, finishedAt: null }
+    const first = mergeRound(base, pushed, theirs)
+    let round = first.merged
+    let conflicts = first.conflicts
+    if (first.signOffDropped)
+      this.repo.setNotice('A round was reopened: items changed while it was being signed off.')
+
+    const latest = this.repo.getRound(pushed.id)
+    if (latest && latest.updatedAt !== pushed.updatedAt) {
+      const second = mergeRound(pushed, latest, round)
+      round = second.merged
+      conflicts = [...conflicts, ...second.conflicts]
+    }
+    return {
+      round: { ...round, updatedAt: Math.max(round.updatedAt, latest?.updatedAt ?? 0) },
+      conflicts,
+    }
+  }
+
   private async pushPhotos(): Promise<void> {
     for (const photo of await this.repo.pendingPhotos()) {
-      await this.api.uploadPhoto(photo.id, photo.roundId, photo.itemId, photo.blob)
-      await this.repo.markPhotoUploaded(photo.id)
+      try {
+        await this.api.uploadPhoto(photo.id, photo.roundId, photo.itemId, photo.blob)
+        await this.repo.markPhotoUploaded(photo.id)
+      } catch (e) {
+        if (e instanceof NetworkError) throw e
+        if (e instanceof RejectedError && e.status === 404) continue // the round has not synced yet; next time
+        await this.repo.markPhotoRejected(photo.id, e instanceof Error ? e.message : String(e))
+      }
     }
   }
 }

@@ -56,11 +56,25 @@ describe('mergeRound', () => {
     expect(mergeRound(b, mine, theirs).conflicts).toEqual([])
   })
 
-  it('keeps my finish when only I finished', () => {
+  it('keeps a sign-off only when the other side changed nothing', () => {
     const b = base()
     const mine = { ...b, finishedAt: 5000 }
-    const theirs = withItem(b, 'i1', { status: 'skipped' })
-    expect(mergeRound(b, mine, theirs).merged.finishedAt).toBe(5000)
-    expect(mergeRound(b, b, { ...theirs, finishedAt: 6000 }).merged.finishedAt).toBe(6000)
+    expect(mergeRound(b, mine, b)).toMatchObject({
+      merged: { finishedAt: 5000 },
+      signOffDropped: false,
+    })
+    expect(mergeRound(b, b, { ...b, finishedAt: 6000 }).merged.finishedAt).toBe(6000)
+
+    // They changed an item while I signed off: the sign-off goes, the item stays.
+    const theirs = withItem(b, 'i1', { status: 'issue', note: 'noise', updatedAt: 4000 })
+    const r = mergeRound(b, mine, theirs)
+    expect(r.signOffDropped).toBe(true)
+    expect(r.merged.finishedAt).toBeNull()
+    expect(r.merged.items.i1?.status).toBe('issue')
+    // And the mirror image.
+    expect(
+      mergeRound(b, withItem(b, 'i2', { status: 'ok' }), { ...b, finishedAt: 7000 }).merged
+        .finishedAt,
+    ).toBeNull()
   })
 })

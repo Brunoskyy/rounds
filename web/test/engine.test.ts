@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { openRoundsDB } from '../src/data/db.ts'
 import { Repo } from '../src/data/repo.ts'
+import { RejectedError } from '../src/data/api.ts'
 import { SyncEngine } from '../src/sync/engine.ts'
 import { FakeApi, newRound } from './fakeApi.ts'
 
@@ -187,5 +188,148 @@ describe('Repo.saveRound', () => {
       pressure: { status: 'issue', reading: 9 },
     })
     expect(again.getSnapshot().outbox).toHaveLength(1)
+  })
+})
+
+describe('edits during a push', () => {
+  /** An API whose push waits until the test lets it through. */
+  function gate(api: FakeApi) {
+    let release: () => void = () => {}
+    const original = api.pushRound.bind(api)
+    api.pushRound = async (round) => {
+      await new Promise<void>((r) => (release = r))
+      return original(round)
+    }
+    return () => release()
+  }
+
+  it('keeps an edit made while the push is in flight, and sends it next', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    const release = gate(api)
+    const syncing = engine.sync()
+    await new Promise((r) => setTimeout(r, 10))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'leaks', { status: 'issue', note: 'late' }))
+    release()
+    await syncing
+    // Still queued, still on the device, base moved to the pushed version.
+    expect(repo.getSnapshot().outbox.map((e) => e.roundId)).toEqual(['r1'])
+    expect(repo.getRound('r1')).toMatchObject({
+      version: 1,
+      items: { leaks: { status: 'issue', note: 'late' } },
+    })
+    api.pushRound = FakeApi.prototype.pushRound.bind(api)
+    await engine.sync()
+    expect(repo.getSnapshot().outbox).toEqual([])
+    expect(api.rounds.get('r1')?.items.leaks).toMatchObject({ status: 'issue', note: 'late' })
+  })
+
+  it('layers an in-flight edit on top of a merged 409', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await engine.sync()
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'pressure', { status: 'ok', reading: 2 }))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'leaks', { status: 'ok' }))
+    const release = gate(api)
+    const syncing = engine.sync()
+    await new Promise((r) => setTimeout(r, 10))
+    await repo.saveRound(
+      setItem(repo.getRound('r1')!, 'photo', { status: 'skipped', note: 'no camera' }),
+    )
+    release()
+    api.pushRound = FakeApi.prototype.pushRound.bind(api)
+    await syncing
+    await engine.sync()
+    expect(api.rounds.get('r1')?.items).toMatchObject({
+      pressure: { reading: 2 },
+      leaks: { status: 'ok' },
+      photo: { status: 'skipped', note: 'no camera' },
+    })
+    expect(repo.getSnapshot().outbox).toEqual([])
+  })
+})
+
+describe('merge base', () => {
+  it('treats every difference as a conflict when the base version does not match', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await engine.sync()
+    // Corrupt the base on purpose: pretend the device saw v1 but the base is missing.
+    await repo.db.delete('serverRounds', 'r1')
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'pressure', { status: 'ok', reading: 2 }))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'leaks', { status: 'issue' }))
+    await engine.sync()
+    const conflict = repo.getSnapshot().conflicts[0]
+    expect(conflict?.conflicts.map((c) => c.itemId).sort()).toEqual(['leaks', 'pressure'])
+    // Nothing was silently reverted on the server.
+    expect(api.rounds.get('r1')?.items.pressure?.reading).toBe(2)
+  })
+
+  it('moves the base to the server copy after a clean merge, so the next 409 merges right', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await engine.sync()
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'pressure', { status: 'ok', reading: 2 }))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'leaks', { status: 'ok' }))
+    await engine.sync()
+    expect((await repo.serverCopy('r1'))?.version).toBe(3)
+    // The other device now sets pressure back; with a stale base this would look like our change.
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'pressure', { status: 'pending' }))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'photo', { status: 'skipped' }))
+    await engine.sync()
+    expect(api.rounds.get('r1')?.items.pressure?.status).toBe('pending')
+    expect(repo.getSnapshot().conflicts).toEqual([])
+  })
+})
+
+describe('failures that are not the network', () => {
+  it('records a rejected round and still pulls', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await repo.saveRound(newRound('r2'))
+    const original = api.pushRound.bind(api)
+    api.pushRound = async (round) => {
+      if (round.id === 'r1') throw new RejectedError(400, 'unknown checklist')
+      return original(round)
+    }
+    await engine.sync()
+    expect(repo.getSnapshot().sites).toHaveLength(1)
+    expect(repo.getSnapshot().outbox.find((e) => e.roundId === 'r1')).toMatchObject({
+      attempts: 1,
+      lastError: 'unknown checklist',
+    })
+    expect(repo.getSnapshot().outbox.find((e) => e.roundId === 'r2')).toBeUndefined()
+    expect(engine.status.online).toBe(true)
+  })
+
+  it('parks a refused photo instead of retrying it forever', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    api.uploadPhoto = () => Promise.reject(new RejectedError(415, 'jpeg, png or webp only'))
+    await repo.addPhoto({
+      id: 'p1',
+      roundId: 'r1',
+      itemId: 'photo',
+      mime: 'image/gif',
+      blob: new Blob(['x']),
+      uploaded: false,
+    })
+    await engine.sync()
+    expect(await repo.pendingPhotos()).toEqual([])
+    expect((await repo.getPhoto('p1'))?.error).toMatch(/jpeg/)
+    expect(repo.getSnapshot().sites).toHaveLength(1)
+  })
+})
+
+describe('sign-off', () => {
+  it('reopens a round signed off while the other side changed an item', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await engine.sync()
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'leaks', { status: 'issue', note: 'found late' }))
+    await repo.saveRound({ ...repo.getRound('r1')!, finishedAt: 999 })
+    await engine.sync()
+    expect(api.rounds.get('r1')?.finishedAt).toBeNull()
+    expect(repo.getSnapshot().notice).toMatch(/reopened/)
   })
 })

@@ -3,7 +3,7 @@ dist/
 coverage/
 *.tsbuildinfo
 .DS_Store
-data/
+/data/
 *.db
 *.db-*
 .env

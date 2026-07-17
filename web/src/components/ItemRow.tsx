@@ -29,18 +29,21 @@ const STATUS: Array<{ value: ItemStatus; label: string; tone: string }> = [
 export function ItemRow({ def, item, readOnly, onPatch, onPhoto, getPhoto }: Props) {
   // Drafts for the two typed fields. When the item changes underneath (a
   // sync brought a new value), the draft follows; while typing, it leads.
+  // A field being typed into keeps its draft even if a pull changes the
+  // item underneath; the draft is reconciled on blur.
+  const [editing, setEditing] = useState<'note' | 'reading' | null>(null)
   const [note, setNote] = useState(item.note)
   const [seenNote, setSeenNote] = useState(item.note)
   if (item.note !== seenNote) {
     setSeenNote(item.note)
-    setNote(item.note)
+    if (editing !== 'note') setNote(item.note)
   }
   const readingText = item.reading === undefined ? '' : String(item.reading)
   const [reading, setReading] = useState(readingText)
   const [seenReading, setSeenReading] = useState(readingText)
   if (readingText !== seenReading) {
     setSeenReading(readingText)
-    setReading(readingText)
+    if (editing !== 'reading') setReading(readingText)
   }
   const flagged = outOfRange(def, item.reading)
 
@@ -98,7 +101,11 @@ export function ItemRow({ def, item, readOnly, onPatch, onPhoto, getPhoto }: Pro
               value={reading}
               disabled={readOnly}
               onChange={(e) => setReading(e.target.value)}
-              onBlur={commitReading}
+              onFocus={() => setEditing('reading')}
+              onBlur={() => {
+                setEditing(null)
+                commitReading()
+              }}
               onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
               aria-describedby={def.range ? `${def.id}-range` : undefined}
             />
@@ -177,7 +184,11 @@ export function ItemRow({ def, item, readOnly, onPatch, onPhoto, getPhoto }: Pro
           disabled={readOnly}
           maxLength={1000}
           onChange={(e) => setNote(e.target.value)}
-          onBlur={() => note !== item.note && onPatch({ note })}
+          onFocus={() => setEditing('note')}
+          onBlur={() => {
+            setEditing(null)
+            if (note !== item.note) onPatch({ note })
+          }}
         />
       </label>
     </div>

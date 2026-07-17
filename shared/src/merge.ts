@@ -18,6 +18,13 @@ export interface ItemConflict {
 export interface MergeResult {
   merged: Round
   conflicts: ItemConflict[]
+  /**
+   * True when one side signed the round off while the other side was still
+   * changing items. The sign-off is dropped: whoever signed did not see those
+   * changes, and a signed-off round with an unreviewed item is worse than one
+   * that asks to be signed again.
+   */
+  signOffDropped: boolean
 }
 
 const sameItem = (a: RoundItem | undefined, b: RoundItem | undefined): boolean =>
@@ -53,11 +60,21 @@ export function mergeRound(base: Round, mine: Round, theirs: Round): MergeResult
     }
   }
 
-  const finishedAt = mine.finishedAt !== base.finishedAt ? mine.finishedAt : theirs.finishedAt
+  const mineSigned = mine.finishedAt !== base.finishedAt && mine.finishedAt !== null
+  const theirsSigned = theirs.finishedAt !== base.finishedAt && theirs.finishedAt !== null
+  const touched = (side: Round) =>
+    Object.keys(side.items).some((id) => !sameItem(base.items[id], side.items[id]))
+  const signOffDropped = (mineSigned && touched(theirs)) || (theirsSigned && touched(mine))
+  const finishedAt = signOffDropped
+    ? null
+    : mine.finishedAt !== base.finishedAt
+      ? mine.finishedAt
+      : theirs.finishedAt
 
   return {
     merged: { ...theirs, items, finishedAt, updatedAt: Math.max(mine.updatedAt, theirs.updatedAt) },
     conflicts,
+    signOffDropped,
   }
 }
 

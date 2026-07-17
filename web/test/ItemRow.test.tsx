@@ -89,3 +89,32 @@ describe('ItemRow', () => {
     expect(screen.getByLabelText('No leaks note')).toBeDisabled()
   })
 })
+
+describe('ItemRow while typing', () => {
+  it('keeps the draft when the item changes underneath a focused field', async () => {
+    const user = userEvent.setup()
+    const onPatch = vi.fn()
+    const props = {
+      def: check,
+      readOnly: false,
+      onPatch,
+      onPhoto: vi.fn(),
+      getPhoto: () => Promise.resolve(undefined),
+    }
+    const { rerender } = render(
+      <ItemRow {...props} item={{ ...base, itemId: 'leaks', status: 'issue' }} />,
+    )
+    const note = screen.getByLabelText('No leaks note')
+    await user.click(note)
+    await user.type(note, 'my obser')
+    rerender(
+      <ItemRow
+        {...props}
+        item={{ ...base, itemId: 'leaks', status: 'issue', note: 'from the other phone' }}
+      />,
+    )
+    expect(note).toHaveValue('my obser')
+    await user.tab()
+    expect(onPatch).toHaveBeenCalledWith({ note: 'my obser' })
+  })
+})

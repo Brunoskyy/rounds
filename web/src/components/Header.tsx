@@ -1,9 +1,12 @@
-import { useRepo, useSyncStatus } from '../app-context.ts'
+import { useRepo, useServices, useSyncStatus } from '../app-context.ts'
+import { useUpdateAvailable } from '../lib/update.ts'
 import { navigate } from '../lib/router.ts'
 
 export function Header() {
   const status = useSyncStatus()
-  const { outbox, conflicts } = useRepo()
+  const { outbox, conflicts, notice } = useRepo()
+  const { repo } = useServices()
+  const applyUpdate = useUpdateAvailable()
   const pending = outbox.length
   const label = !status.online
     ? pending
@@ -25,29 +28,47 @@ export function Header() {
         : 'bg-ok'
 
   return (
-    <header className="border-line bg-panel sticky top-0 z-20 flex items-center gap-3 border-b px-4 py-3">
-      <a
-        href="/"
-        onClick={(e) => {
-          e.preventDefault()
-          navigate('/')
-        }}
-        className="font-semibold tracking-tight"
-      >
-        Rounds
-      </a>
-      <a
-        href="/sync"
-        onClick={(e) => {
-          e.preventDefault()
-          navigate('/sync')
-        }}
-        className="text-muted hover:text-ink ml-auto flex items-center gap-2 text-sm"
-        aria-label={`Sync status: ${label}`}
-      >
-        <span className={`h-2.5 w-2.5 rounded-full ${tone}`} aria-hidden="true" />
-        <span role="status">{label}</span>
-      </a>
-    </header>
+    <>
+      <header className="border-line bg-panel sticky top-0 z-20 flex items-center gap-3 border-b px-4 py-3">
+        <a
+          href="/"
+          onClick={(e) => {
+            e.preventDefault()
+            navigate('/')
+          }}
+          className="font-semibold tracking-tight"
+        >
+          Rounds
+        </a>
+        <a
+          href="/sync"
+          onClick={(e) => {
+            e.preventDefault()
+            navigate('/sync')
+          }}
+          className="text-muted hover:text-ink ml-auto flex items-center gap-2 text-sm"
+          aria-label={`Sync status: ${label}`}
+        >
+          <span className={`h-2.5 w-2.5 rounded-full ${tone}`} aria-hidden="true" />
+          <span role="status">{label}</span>
+        </a>
+      </header>
+      {notice && (
+        <div role="alert" className="bg-accent-soft flex items-center gap-3 px-4 py-2 text-sm">
+          <span className="flex-1">{notice}</span>
+          <button type="button" className="underline" onClick={() => repo.setNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {applyUpdate && (
+        <div className="bg-accent-soft flex items-center gap-3 px-4 py-2 text-sm">
+          <span className="flex-1">A new version is ready.</span>
+          <button type="button" className="underline" onClick={applyUpdate}>
+            Reload now
+          </button>
+        </div>
+      )}
+    </>
   )
 }

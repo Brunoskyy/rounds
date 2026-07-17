@@ -84,7 +84,7 @@ export class Store {
     const pick = <T>(table: string): T[] =>
       (
         this.db
-          .prepare(`SELECT data FROM ${table} WHERE updated_at > ? ORDER BY updated_at`)
+          .prepare(`SELECT data FROM ${table} WHERE updated_at >= ? ORDER BY updated_at`)
           .all(since) as Array<{ data: string }>
       ).map((r) => JSON.parse(r.data) as T)
     return {
@@ -94,12 +94,19 @@ export class Store {
     }
   }
 
-  putPhoto(photo: Photo, bytes: Buffer, now: number): void {
+  /**
+   * Photos are evidence and are cached as immutable, so an id is written
+   * once. A retry with the same bytes is fine; different bytes are refused.
+   */
+  putPhoto(photo: Photo, bytes: Buffer, now: number): 'stored' | 'same' | 'taken' {
+    const existing = this.getPhoto(photo.id)
+    if (existing) return existing.bytes.equals(bytes) ? 'same' : 'taken'
     this.db
       .prepare(
-        'INSERT OR REPLACE INTO photos (id, round_id, item_id, mime, bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO photos (id, round_id, item_id, mime, bytes, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(photo.id, photo.roundId, photo.itemId, photo.mime, bytes, now)
+    return 'stored'
   }
 
   getPhoto(id: string): { mime: string; bytes: Buffer } | null {

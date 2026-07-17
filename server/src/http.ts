@@ -97,9 +97,19 @@ export function createRequestHandler({ store, staticDir, now = Date.now }: HttpO
           if (!PHOTO_TYPES.has(mime)) return json(res, 415, { error: 'jpeg, png or webp only' })
           const roundId = parseId(url.searchParams.get('round'), 'round id')
           const itemId = parseId(url.searchParams.get('item'), 'item id')
+          const round = store.getRound(roundId)
+          if (!round)
+            return json(res, 404, { error: 'unknown round; sync the round before its photos' })
+          if (!Object.hasOwn(round.items, itemId))
+            return json(res, 400, { error: 'unknown item on that round' })
+          const declared = Number(req.headers['content-length'] ?? 0)
+          if (declared > MAX_PHOTO)
+            return json(res, 413, { error: `photos are limited to ${MAX_PHOTO} bytes` })
           const bytes = await readBytes(req, MAX_PHOTO)
           const photo = { id, roundId, itemId, mime, bytes: bytes.length }
-          store.putPhoto(photo, bytes, now())
+          const outcome = store.putPhoto(photo, bytes, now())
+          if (outcome === 'taken')
+            return json(res, 409, { error: 'a different photo already has this id' })
           return json(res, 200, { ok: true, photo })
         }
       }
@@ -112,7 +122,8 @@ export function createRequestHandler({ store, staticDir, now = Date.now }: HttpO
         res.destroy()
         return
       }
-      if (e instanceof InvalidInput) return json(res, 400, { error: e.message })
+      if (e instanceof InvalidInput || e instanceof URIError)
+        return json(res, 400, { error: e instanceof URIError ? 'bad path encoding' : e.message })
       if (e instanceof PayloadTooLarge) return json(res, 413, { error: e.message })
       json(res, 500, { error: 'server error' })
     }

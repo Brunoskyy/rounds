@@ -60,6 +60,23 @@ describe('sync pull', () => {
   })
 })
 
+describe('sync cursor', () => {
+  it('delivers a write stamped in the same millisecond as the cursor', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rounds-'))
+    // A clock that stands still: every request sees the same millisecond.
+    const app = createApp({ dbPath: join(dir, 'test.db'), now: () => 5000 })
+    const port = await app.listen(0, '127.0.0.1')
+    const t = { app, base: `http://127.0.0.1:${port}`, dir }
+    apps.push(t)
+    const first = await sync(t)
+    expect(first.now).toBe(5000)
+    const checklist = first.checklists[0] as Checklist
+    await put(t, emptyRound('r1', checklist, 'Ana', 5))
+    const second = await sync(t, first.now)
+    expect(second.rounds.map((r) => r.id)).toEqual(['r1'])
+  })
+})
+
 describe('rounds', () => {
   it('creates a round, then rejects a stale write with the current record', async () => {
     const t = await boot()
@@ -125,14 +142,19 @@ describe('rounds', () => {
 })
 
 describe('photos', () => {
-  it('stores and serves bytes, and refuses other types', async () => {
+  it('stores and serves bytes, once per id, and refuses other types', async () => {
     const t = await boot()
+    const checklist = (await sync(t)).checklists.find((c) => c.id === 'chk-boiler') as Checklist
+    await put(t, emptyRound('r1', checklist, 'Ana', 5))
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0])
-    const up = await fetch(`${t.base}/api/photos/p1?round=r1&item=gauge-photo`, {
-      method: 'PUT',
-      headers: { 'content-type': 'image/png' },
-      body: png,
-    })
+    const upload = (id: string, query: string, body: Buffer | string, type = 'image/png') =>
+      fetch(`${t.base}/api/photos/${id}?${query}`, {
+        method: 'PUT',
+        headers: { 'content-type': type },
+        body,
+      })
+
+    const up = await upload('p1', 'round=r1&item=gauge-photo', png)
     expect(up.status).toBe(200)
     expect(await up.json()).toMatchObject({
       ok: true,
@@ -141,12 +163,17 @@ describe('photos', () => {
     const down = await fetch(`${t.base}/api/photos/p1`)
     expect(down.headers.get('content-type')).toBe('image/png')
     expect(Buffer.from(await down.arrayBuffer()).equals(png)).toBe(true)
-    const nope = await fetch(`${t.base}/api/photos/p2?round=r1&item=x`, {
-      method: 'PUT',
-      headers: { 'content-type': 'text/plain' },
-      body: 'hi',
-    })
-    expect(nope.status).toBe(415)
+
+    // A retry with the same bytes is fine; different bytes for a stored id are not.
+    expect((await upload('p1', 'round=r1&item=gauge-photo', png)).status).toBe(200)
+    expect((await upload('p1', 'round=r1&item=gauge-photo', Buffer.from('evil'))).status).toBe(409)
+    expect(
+      Buffer.from(await (await fetch(`${t.base}/api/photos/p1`)).arrayBuffer()).equals(png),
+    ).toBe(true)
+
+    expect((await upload('p2', 'round=r1&item=gauge-photo', 'hi', 'text/plain')).status).toBe(415)
+    expect((await upload('p3', 'round=nope&item=gauge-photo', png)).status).toBe(404)
+    expect((await upload('p4', 'round=r1&item=nope', png)).status).toBe(400)
     expect((await fetch(`${t.base}/api/photos/missing`)).status).toBe(404)
   })
 })

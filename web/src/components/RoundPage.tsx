@@ -4,6 +4,7 @@ import { roundProgress, type Round, type RoundItem } from '@rounds/shared'
 
 import { useRepo, useServices } from '../app-context.ts'
 import { newId } from '../lib/ids.ts'
+import { prepareImage } from '../lib/images.ts'
 import { ItemRow } from './ItemRow.tsx'
 import { Link } from './Link.tsx'
 
@@ -56,12 +57,13 @@ export function RoundPage({ id }: { id: string }) {
 
   const attachPhoto = async (itemId: string, file: File) => {
     const photoId = newId()
+    const blob = await prepareImage(file)
     await repo.addPhoto({
       id: photoId,
       roundId: round.id,
       itemId,
-      mime: file.type,
-      blob: file,
+      mime: blob.type,
+      blob,
       uploaded: false,
     })
     update((current) => {
@@ -81,7 +83,10 @@ export function RoundPage({ id }: { id: string }) {
 
   const progress = roundProgress(round)
   const finished = round.finishedAt !== null
-  const canFinish = progress.done === progress.total && !finished
+  // While a conflict waits for a decision the round is read-only; otherwise
+  // the decision would overwrite whatever was typed in the meantime.
+  const locked = finished || conflict !== undefined
+  const canFinish = progress.done === progress.total && !finished && !conflict
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-6 pb-32">
@@ -122,7 +127,7 @@ export function RoundPage({ id }: { id: string }) {
               <ItemRow
                 def={def}
                 item={item}
-                readOnly={finished}
+                readOnly={locked}
                 onPatch={(patch) => patchItem(def.id, patch)}
                 onPhoto={(file) => void attachPhoto(def.id, file)}
                 getPhoto={(photoId) => repo.getPhoto(photoId)}
