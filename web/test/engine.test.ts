@@ -280,6 +280,32 @@ describe('merge base', () => {
     expect(api.rounds.get('r1')?.items.pressure?.status).toBe('pending')
     expect(repo.getSnapshot().conflicts).toEqual([])
   })
+
+  it('moves the base on a parked conflict too, so a later 409 still merges cleanly', async () => {
+    const { repo, api, engine } = await setup()
+    await repo.saveRound(newRound('r1'))
+    await engine.sync()
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'leaks', { status: 'ok' }))
+    await repo.saveRound(setItem(repo.getRound('r1')!, 'leaks', { status: 'issue', note: 'rust' }))
+    await engine.sync()
+    expect(repo.getSnapshot().conflicts).toHaveLength(1)
+    expect((await repo.serverCopy('r1'))?.version).toBe(2)
+
+    // While the person decides, the other device changes a different item.
+    api.otherDeviceEdits('r1', (r) => setItem(r, 'pressure', { status: 'ok', reading: 2 }))
+    const conflict = repo.getSnapshot().conflicts[0]!
+    await repo.resolveConflict('r1', {
+      ...conflict.merged,
+      items: { ...conflict.merged.items, leaks: conflict.conflicts[0]!.mine },
+    })
+    await engine.sync()
+    expect(repo.getSnapshot().conflicts).toEqual([])
+    expect(repo.getSnapshot().outbox).toEqual([])
+    expect(api.rounds.get('r1')?.items).toMatchObject({
+      leaks: { status: 'issue', note: 'rust' },
+      pressure: { status: 'ok', reading: 2 },
+    })
+  })
 })
 
 describe('failures that are not the network', () => {
