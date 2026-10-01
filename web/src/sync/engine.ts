@@ -27,8 +27,9 @@ const MAX_MERGE_RETRIES = 3
  *   pushed straight away, otherwise the round is parked until the person
  *   picks, and the rest of the queue carries on.
  * - `pull` fetches what changed since the last sync. Rounds with local
- *   edits waiting are not overwritten; their server copy is updated so the
- *   next merge has the right base.
+ *   edits waiting are left alone, server copy included: it stays the version
+ *   those edits were made from, which is the base the merge needs. The push
+ *   then gets a 409 and merges against the real current record.
  * - Going offline is not an error, just a reason to wait.
  */
 export class SyncEngine {
