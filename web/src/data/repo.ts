@@ -226,32 +226,43 @@ export class Repo {
     })
   }
 
-  async markAttempt(roundId: string, error?: string, blocked = false): Promise<void> {
-    const entry = await this.db.get('outbox', roundId)
-    if (!entry) return
-    const next: OutboxEntry = { ...entry, attempts: entry.attempts + 1, blocked }
-    if (error !== undefined) next.lastError = error
-    else delete next.lastError
-    await this.db.put('outbox', next)
-    await this.reloadLists()
+  /**
+   * Records a push attempt. The read and the write are separate requests, so
+   * this goes through the queue too: a save or a confirm landing in between
+   * would otherwise be overwritten with the entry as it was read.
+   */
+  markAttempt(roundId: string, error?: string, blocked = false): Promise<void> {
+    return this.serial(async () => {
+      const entry = await this.db.get('outbox', roundId)
+      if (!entry) return
+      const next: OutboxEntry = { ...entry, attempts: entry.attempts + 1, blocked }
+      if (error !== undefined) next.lastError = error
+      else delete next.lastError
+      await this.db.put('outbox', next)
+      await this.reloadLists()
+    })
   }
 
-  async setConflict(conflict: PendingConflict): Promise<void> {
-    await this.db.put('conflicts', conflict)
-    await this.reloadLists()
+  setConflict(conflict: PendingConflict): Promise<void> {
+    return this.serial(async () => {
+      await this.db.put('conflicts', conflict)
+      await this.reloadLists()
+    })
   }
 
   /** The person chose; the resolved round becomes local and goes back in the queue. */
-  async resolveConflict(roundId: string, resolved: Round): Promise<void> {
-    const tx = this.db.transaction(['rounds', 'conflicts', 'outbox'], 'readwrite')
-    await tx.objectStore('rounds').put(resolved)
-    await tx.objectStore('conflicts').delete(roundId)
-    const entry = await tx.objectStore('outbox').get(roundId)
-    await tx
-      .objectStore('outbox')
-      .put({ roundId, enqueuedAt: entry?.enqueuedAt ?? Date.now(), attempts: 0 })
-    await tx.done
-    await this.reloadLists()
+  resolveConflict(roundId: string, resolved: Round): Promise<void> {
+    return this.serial(async () => {
+      const tx = this.db.transaction(['rounds', 'conflicts', 'outbox'], 'readwrite')
+      await tx.objectStore('rounds').put(resolved)
+      await tx.objectStore('conflicts').delete(roundId)
+      const entry = await tx.objectStore('outbox').get(roundId)
+      await tx
+        .objectStore('outbox')
+        .put({ roundId, enqueuedAt: entry?.enqueuedAt ?? Date.now(), attempts: 0 })
+      await tx.done
+      await this.reloadLists()
+    })
   }
 
   async addPhoto(photo: StoredPhoto): Promise<void> {
