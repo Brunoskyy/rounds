@@ -97,7 +97,7 @@ wrong thirty lines to save.
 
 ## Tests
 
-35 tests, run with `npm test` from the repo root: the merge and validators as
+36 tests, run with `npm test` from the repo root: the merge and validators as
 pure functions, the server over real HTTP including the losing write, and the
 client's repo and engine against `fake-indexeddb` and a fake API with an
 offline switch (queue offline, survive a reload, merge a clean 409, park a real
