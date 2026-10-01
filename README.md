@@ -12,14 +12,12 @@
 <br>
 
 A technician walks a plant with a checklist: read the pressure gauge, check
-the pump seals for leaks, photograph the panel, sign off. Boiler rooms and
-basements do not have Wi-Fi, so the app has to work as if the network were
-optional, and then not lose anything when two people edit the same round
-from two phones.
-
-That last part is the project. The interesting code is a sync engine with an
-outbox, a three-way merge, and a conflict screen that asks the person
-instead of picking a winner by timestamp.
+the pump seals, photograph the panel, sign off. That walk is called a round,
+hence the name. Boiler rooms have no Wi-Fi, so the app works as if the network
+were optional, and loses nothing when two people edit the same round from two
+phones. That last part is the project: a sync engine with an outbox, a
+three-way merge, and a conflict screen that asks the person instead of letting
+a timestamp pick.
 
 <p align="center">
   <img src="docs/screenshots/round.jpg" width="300" alt="A round in progress: a pressure reading flagged outside its range, status buttons per item">
@@ -28,128 +26,93 @@ instead of picking a winner by timestamp.
 
 ## Running it
 
-```bash
-nvm use            # Node 24, for node:sqlite
-npm install
-npm run dev        # API on :8788, Vite on :5174
-```
+You need Node 24 (`nvm use` reads the `.nvmrc`). No database to install: the
+server keeps a SQLite file in `data/` and seeds two sites on first start.
 
-Open http://localhost:5174, give a name, pick a site, start a round. Then
-turn the network off in devtools (or the Wi-Fi), keep working, reload the
-page, turn it back on. To see a conflict, edit the same item from a second
-browser profile while the first is offline.
+1. Clone and install:
 
-| Command                                                                      |                                                                         |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `npm test`                                                                   | shared, server and client tests                                         |
-| `npm run typecheck`                                                          | `tsc` per workspace                                                     |
-| `npm run build`                                                              | client (with the service worker) to `web/dist`, server to `server/dist` |
-| `npm start`                                                                  | one process serves the API and the built client                         |
-| `docker build -t rounds . && docker run -p 8788:8788 -v rounds:/data rounds` | the same, in a container                                                |
+   ```bash
+   git clone https://github.com/Brunoskyy/rounds.git && cd rounds
+   nvm use
+   npm install
+   ```
+
+2. Build and start, from the repo root. One process on port 8788 serves the
+   API and the app with its service worker, which is what makes offline work:
+
+   ```bash
+   npm run build
+   npm start
+   ```
+
+3. Open http://localhost:8788, type a name, pick a site, start a round. Then
+   switch the network off in devtools, keep working, reload the page, and
+   switch it back on. For a conflict, edit the same item from a second browser
+   profile while the first one is offline.
+
+Stop with Ctrl+C. To start over, delete the `data/` folder (and the site data
+in the browser's devtools).
+
+For development with hot reload, use two terminals from the repo root:
+`npm run dev -w server` (API on 8788) and `npm run dev -w web` (app on
+http://localhost:5174). The service worker only runs in the built app, so
+test offline with step 2.
+
+| Command (repo root) | |
+| --- | --- |
+| `npm test` | shared, server and client tests |
+| `npm run typecheck` | `tsc` per workspace |
+| `docker build -t rounds . && docker run -p 8788:8788 -v rounds:/data rounds` | the built app in a container |
 
 ## How offline works
 
-Three layers, each with one job.
-
-**The service worker** precaches the app shell, so the page opens with no
-network at all. It never caches `/api`: the data lives in IndexedDB, and a
-worker that cached API responses would be a second, dumber source of truth.
-A new version is offered in a banner, never applied by reloading under
-someone's fingers.
-
-**IndexedDB, through a small `Repo`**, holds sites, checklists, and two
-copies of every round: the one this device edits and the last one the server
-confirmed. Every edit also puts the round in an outbox. The in-memory copy is
-updated before the disk write starts, so two taps within one write's latency
-build on each other instead of racing.
-
-**The sync engine** drains the outbox when online and pulls what changed
-since the last sync. It is the part worth reading, in
-`web/src/sync/engine.ts`, and it is about 150 lines.
+- **The service worker** precaches the app shell and never caches `/api`; a
+  new version is offered in a banner, never applied under someone's fingers.
+- **IndexedDB** holds two copies of every round: the one this device edits and
+  the last one the server confirmed. Every edit goes into an outbox.
+- **The sync engine** (`web/src/sync/engine.ts`, about 150 lines) drains the
+  outbox when online and pulls what changed since the last sync.
 
 ## How conflicts work
 
-The server keeps a version counter per round. A write names the version it
-was made from; the check and the write are one SQL statement, so two devices
-racing cannot both win. The loser gets a 409 with the current record.
-
-The client then merges three ways: the last confirmed copy (base), its own
-copy (mine), and the server's (theirs).
-
-- An item only one side changed is taken from that side.
-- An item both sides changed the same way is not a conflict.
-- An item both sides changed differently is a conflict. The merge does not
-  choose. The round is parked, the rest of the queue keeps going, and the
-  sync page shows both versions per item for the person to pick. Their
-  choice is pushed as a new edit from the server's version.
-
-A pull never touches a round with edits waiting, not even its server copy,
-because that copy is the base the next merge needs. The push will hit the
-409 and merge against the real current record.
+The server keeps a version per round, and a write names the version it was
+made from; the check and the write are one SQL statement, so two devices can't
+both win. The loser gets a 409 with the current record and merges three ways:
+base (last confirmed), mine and theirs. An item only one side changed is
+taken; both sides with the same change is fine; both sides with different
+changes is a conflict the person resolves on the sync page, while the rest of
+the queue keeps going.
 
 Whole-field last-writer-wins would have been thirty lines shorter. On a
-maintenance round, silently replacing "issue: seal weeping" with "ok" is
-the wrong thirty lines to save.
+maintenance round, silently turning "issue: seal weeping" into "ok" is the
+wrong thirty lines to save.
 
 ## Things worth opening
 
-**`shared/src/merge.ts`.** The three-way merge, pure, with the cases
-spelled out in its tests: one side, both sides same, both sides different,
-sign-off on one side.
-
-**`web/src/sync/engine.ts`.** Push, merge on 409, retry, park, pull. Going
-offline is not an error, just a reason to wait. Tests drive it against a
-fake server with the same version rule, including the tab closing with the
-queue on disk.
-
-**`server/src/store.ts`.** `putRound` is one `UPDATE ... WHERE version = ?`.
-No transaction dance, no locks.
-
-**`web/src/components/ItemRow.tsx`.** Sized for a thumb in a glove. A
-reading outside the checklist's range becomes an issue on its own; someone
-has to say otherwise.
+- **`shared/src/merge.ts`:** the three-way merge, pure, with each case in its tests.
+- **`web/src/sync/engine.ts`:** push, merge on 409, retry, park, pull.
+- **`server/src/store.ts`:** `putRound` is one `UPDATE ... WHERE version = ?`.
+- **`web/src/components/ItemRow.tsx`:** sized for a thumb in a glove; a reading
+  out of range becomes an issue on its own.
 
 ## Tests
 
-```bash
-npm test
-```
-
-35 tests. The merge and the validators as pure functions; the server over
-real HTTP on a random port, including the losing write; the client's repo
-and engine against `fake-indexeddb` and a fake API with an offline switch:
-queue while offline, survive a reload, auto-merge a clean 409, park a real
-conflict and push the rest, resolve and push, pull without clobbering, keep
-an edit made while a push is in flight, refuse to merge against a base of
-the wrong version, carry on past a rejected round or photo, reopen a
-sign-off that raced an edit. Component tests cover the item row (including
-typing while a pull changes the item) and the conflict card.
+35 tests, run with `npm test` from the repo root: the merge and validators as
+pure functions, the server over real HTTP including the losing write, and the
+client's repo and engine against `fake-indexeddb` and a fake API with an
+offline switch (queue offline, survive a reload, merge a clean 409, park a real
+conflict, keep an edit made while a push is in flight).
 
 ## Layout
 
 ```
-shared/src/
-  types.ts       site, checklist, round, item
-  merge.ts       three-way merge and conflict resolution
-  validate.ts    untrusted JSON to a Round, or an error that says why
-server/src/
-  store.ts       SQLite, versioned writes, changed-since
-  http.ts        sync pull, round put, photos, static files
-  seed.ts        two sites and three checklists
-web/src/
-  data/db.ts     IndexedDB schema
-  data/repo.ts   memory + write-through, outbox, conflicts
-  sync/engine.ts push, merge, pull
-  components/    Home, SitePage, RoundPage, ItemRow, SyncPage
+shared/src/   types, three-way merge, validation
+server/src/   SQLite store with versioned writes, HTTP, seed
+web/src/      IndexedDB repo and outbox, sync engine, screens
 ```
 
 ## What's missing
 
-- No accounts. The name typed on first launch is the technician.
-- Photos are redrawn to jpeg at 1600px before storing, which handles HEIC
-  and the 50 MP modes; there is no retry UI for a photo the server refused
-  beyond showing the reason.
-- No background sync when the app is closed. The Background Sync API is
-  Chromium-only; the engine syncs whenever the app is open and online.
-- Checklists are seeded, not editable. An admin screen would be a separate
-  project.
+- No accounts: the name typed on first launch is the technician.
+- No background sync with the app closed; it syncs whenever it is open and online.
+- Checklists are seeded, not editable.
